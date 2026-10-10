@@ -8,6 +8,7 @@ import 'package:hiddify/features/connection/data/connection_data_providers.dart'
 import 'package:hiddify/features/connection/data/connection_repository.dart';
 import 'package:hiddify/features/connection/model/connection_failure.dart';
 import 'package:hiddify/features/connection/model/connection_status.dart';
+import 'package:hiddify/features/gfp/gfp_health_monitor.dart';
 import 'package:hiddify/features/profile/model/profile_entity.dart';
 import 'package:hiddify/features/profile/notifier/active_profile_notifier.dart';
 import 'package:hiddify/hiddifycore/init_signal.dart';
@@ -23,6 +24,9 @@ part 'connection_notifier.g.dart';
 class ConnectionNotifier extends _$ConnectionNotifier with AppLogger {
   @override
   Stream<ConnectionStatus> build() async* {
+    // A native TUN existing is not yet a proof of usable Internet. Rebuild the
+    // status stream when the first complete public-route proof is published.
+    ref.watch(gfpVerifiedTagsProvider);
     if (Platform.isIOS) {
       await _connectionRepo.setup().mapLeft((l) {
         loggy.error("error setting up connection repository", l);

@@ -31,6 +31,10 @@ Most proxy clients expect users to already understand subscriptions, protocols, 
 
 The public list is a starting point, not a centralized Sod VPN service. Route discovery and validation happen locally on the user's device.
 
+Open ports and latency results are only candidates. A usable public route must pass two fresh HTTPS downloads from distinct hosts, payload checks (including fixed SHA-256 fingerprints for static files), a 16 KiB upload, and a test of the configured DNS transport. Probes use an authenticated loopback inbound with explicit per-candidate routing; they cannot fall back to the live route or a direct connection.
+
+Sod seeks up to five verified routes on Wi-Fi/Ethernet and three on mobile data. Payload proofs have a shared budget of 8 MiB/120 seconds or 4 MiB/60 seconds respectively, excluding feed downloads, protocol overhead and native latency checks. The first verified route is selected once; reserve tests do not switch it. Refresh stays manual and is blocked while connecting or connected. Availability proofs are not persisted as trusted results and are invalidated when the connection or reported network type changes.
+
 ## Download
 
 Use the [GitHub Releases page](https://github.com/sodlabs/sod-app/releases). The first public build is a prerelease so that connection quality can be evaluated in real networks before a stable release.
@@ -84,4 +88,3 @@ Sod is an independently maintained, non-commercial fork of [Hiddify App](https:/
 The source is distributed under the [Hiddify Extended GNU General Public License v3](LICENSE.md). The GitHub fork relationship is intentionally preserved.
 
 Compared with the upstream application, this fork currently changes the product identity and interface, provides a beginner-first default discovery flow, adds local false-positive and sustained-download validation, supports manual deep refresh, removes upstream analytics/community links from the interface, and limits public release targets to Android and Windows. The Git history contains the complete change record.
-

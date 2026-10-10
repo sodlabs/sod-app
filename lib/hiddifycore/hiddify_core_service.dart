@@ -1,40 +1,38 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:math';
+import 'dart:io';
 
 import 'package:fpdart/fpdart.dart';
 import 'package:grpc/grpc.dart';
 import 'package:hiddify/core/directories/directories_provider.dart';
-import 'package:hiddify/core/model/directories.dart';
 import 'package:hiddify/core/notification/in_app_notification_controller.dart';
 import 'package:hiddify/core/preferences/general_preferences.dart';
 import 'package:hiddify/features/connection/model/connection_failure.dart';
+import 'package:hiddify/features/gfp/gfp_probe_session.dart';
+import 'package:hiddify/features/gfp/gfp_proxy_service.dart';
+import 'package:hiddify/features/log/model/log_level.dart' as config_log_level;
 import 'package:hiddify/features/settings/data/config_option_repository.dart';
 import 'package:hiddify/hiddifycore/core_interface/core_interface.dart';
+import 'package:hiddify/hiddifycore/core_interface/core_interface_wrapper_stub.dart'
+    if (dart.library.io) 'package:hiddify/hiddifycore/core_interface/core_interface_wrapper.dart';
 import 'package:hiddify/hiddifycore/generated/v2/hcommon/common.pb.dart';
 import 'package:hiddify/hiddifycore/generated/v2/hcore/hcore.pb.dart';
 import 'package:hiddify/hiddifycore/generated/v2/hcore/hcore_service.pbgrpc.dart';
 import 'package:hiddify/hiddifycore/init_signal.dart';
-import 'package:hiddify/singbox/model/singbox_config_option.dart';
-import 'package:hiddify/features/log/model/log_level.dart' as config_log_level;
 import 'package:hiddify/singbox/model/core_status.dart';
-import 'package:hiddify/singbox/model/warp_account.dart';
-
-import 'package:hiddify/hiddifycore/core_interface/core_interface_wrapper_stub.dart'
-    if (dart.library.io) 'package:hiddify/hiddifycore/core_interface/core_interface_wrapper.dart';
+import 'package:hiddify/singbox/model/singbox_config_option.dart';
 import 'package:hiddify/utils/custom_loggers.dart';
 import 'package:hiddify/utils/platform_utils.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:loggy/loggy.dart' as loggyl;
-import 'package:riverpod_annotation/riverpod_annotation.dart';
 import 'package:rxdart/rxdart.dart';
 
 class HiddifyCoreService with InfraLogger {
-  HiddifyCoreService(this.ref);
+  HiddifyCoreService(this.ref, {CoreInterface? core}) : core = core ?? getCoreInterface();
   final Ref ref;
 
   // CoreHiddifyCoreService() {}
-  final core = getCoreInterface();
+  final CoreInterface core;
 
   CoreStatus currentState = const CoreStatus.stopped();
   final statusController = BehaviorSubject<CoreStatus>();
@@ -42,6 +40,139 @@ class HiddifyCoreService with InfraLogger {
   final CallOptions? grpcOptions = null; //CallOptions(timeout: const Duration(milliseconds: 10000));
   final Map<String, StreamSubscription?> subscriptions = {};
   List<OutboundGroup> latest = [];
+  GfpProbeSession? gfpProbeSession;
+  bool _buildingProbeConfig = false;
+  SingboxConfigOption? _appliedOptions;
+  int _startGeneration = 0;
+
+  /// Fail only a new, never-validated connection attempt. A working tunnel,
+  /// an observed existing tunnel, or a user-selected route is never stopped.
+  Future<bool> abortUnverifiedGfpStart(GfpProbeSession session) async {
+    bool ownsAttempt() =>
+        identical(gfpProbeSession, session) &&
+        !session.locked &&
+        !session.observeOnly &&
+        !session.cancelled &&
+        currentState is CoreStarted;
+    if (!ownsAttempt()) return false;
+    if (session.initialSelection != null) {
+      final groups = await core.bgClient.outboundsInfo(Empty()).first.timeout(const Duration(seconds: 3));
+      final selected = groups.items.where((group) => group.tag == 'select');
+      if (selected.isEmpty || selected.first.selected != session.initialSelection) return false;
+    }
+    if (!ownsAttempt()) return false;
+    await stop().run();
+    return true;
+  }
+
+  Future<GfpProbeSession?> recoverGfpProbeSession() async {
+    if (currentState is! CoreStarted) return null;
+    try {
+      final directories = ref.read(appDirectoriesProvider).requireValue;
+      final file = File('${directories.workingDir.path}/data/current-config.json');
+      final config = (jsonDecode(await file.readAsString()) as Map).cast<String, dynamic>();
+      final options = _appliedOptions ?? ref.read(ConfigOptions.singboxConfigOptions);
+      return gfpProbeSession = GfpProbeSession.recover(
+        config,
+        remoteDnsAddress: options?.remoteDnsAddress ?? 'tcp://8.8.8.8',
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Ask the bundled builder for its complete configuration while disconnected.
+  /// The short-lived foreground instance has neither TUN nor system proxy.
+  /// This keeps native advanced options intact without upgrading the core.
+  Future<GfpProbeSession> prepareGfpProbe(String path, SingboxConfigOption options) async {
+    if (currentState is CoreStarted || _buildingProbeConfig) {
+      throw StateError('Public route tests can only be prepared before connecting');
+    }
+    _buildingProbeConfig = true;
+    var started = false;
+    var changedSettings = false;
+    try {
+      final before = await core.fgClient
+          .coreInfoListener(Empty(), options: CallOptions(timeout: const Duration(seconds: 3)))
+          .first;
+      if (before.coreState != CoreStates.STOPPED) {
+        throw StateError('A core is already running; its connection was preserved');
+      }
+      final temporaryOptions = options.copyWith(enableTun: false, setSystemProxy: false);
+      changedSettings = true;
+      await core.fgClient.changeHiddifySettings(
+        ChangeHiddifySettingsRequest(hiddifySettingsJson: jsonEncode(temporaryOptions.toJson())),
+        options: CallOptions(timeout: const Duration(seconds: 10)),
+      );
+      final directories = ref.read(appDirectoriesProvider).requireValue;
+      final file = File('${directories.workingDir.path}/data/current-config.json');
+      final previousModified = await file.exists() ? await file.lastModified() : null;
+      try {
+        final response = await core.fgClient.start(
+          StartRequest(configPath: path, configName: 'Sod route preparation'),
+          options: CallOptions(timeout: const Duration(seconds: 20)),
+        );
+        if (response.messageType == MessageType.ALREADY_STARTED) {
+          throw StateError('A core is already running; its connection was preserved');
+        }
+        started = response.messageType == MessageType.EMPTY;
+        if (!started) throw StateError('Could not prepare public routes: ${response.message}');
+      } on GrpcError catch (error) {
+        // Some bundled builders save a valid complete config but cannot start
+        // it because an empty direct DNS detour is rejected by sing-box. Read
+        // only that freshly generated config, then repair the redundant detour.
+        if (!(error.message?.contains('detour to an empty direct outbound makes no sense') ?? false)) rethrow;
+        started = true; // Clean up any partially initialized owned instance.
+      }
+      if (previousModified != null && await file.lastModified() == previousModified) {
+        throw StateError('The native builder did not produce a fresh configuration');
+      }
+      final built = (jsonDecode(await file.readAsString()) as Map).cast<String, dynamic>();
+      if (options.enableTun) {
+        (built['inbounds'] as List).add({
+          'type': 'tun',
+          'tag': 'tun-in',
+          'stack': options.tunImplementation.name,
+          'mtu': options.mtu,
+          'auto_route': true,
+          'strict_route': options.strictRoute,
+          'address': ['172.19.0.1/28', if (options.ipv6Mode.key != 'ipv4_only') 'fdfe:dcba:9876::1/126'],
+        });
+        (built['route'] as Map)['auto_detect_interface'] = !PlatformUtils.isMobile;
+      }
+      if (options.setSystemProxy) {
+        for (final inbound in (built['inbounds'] as List).cast<Map>()) {
+          if (inbound['type'] == 'mixed') inbound['set_system_proxy'] = true;
+        }
+      }
+      return GfpProbeSession.fromBuiltConfig(
+        built,
+        port: await GfpProbeSession.availablePort(),
+        remoteDnsAddress: options.remoteDnsAddress,
+      );
+    } finally {
+      try {
+        try {
+          if (started) {
+            await core.fgClient.stop(Empty(), options: CallOptions(timeout: const Duration(seconds: 10)));
+            // Drain the native STOPPED event before publishing real tunnel events.
+            await core.fgClient
+                .coreInfoListener(Empty(), options: CallOptions(timeout: const Duration(seconds: 3)))
+                .firstWhere((event) => event.coreState == CoreStates.STOPPED);
+          }
+        } finally {
+          if (changedSettings) {
+            await core.fgClient.changeHiddifySettings(
+              ChangeHiddifySettingsRequest(hiddifySettingsJson: jsonEncode(options.toJson())),
+              options: CallOptions(timeout: const Duration(seconds: 10)),
+            );
+          }
+        }
+      } finally {
+        _buildingProbeConfig = false;
+      }
+    }
+  }
 
   Future<void> init() async {
     await setup()
@@ -132,12 +263,33 @@ class HiddifyCoreService with InfraLogger {
         }
       }
 
+      _appliedOptions = options;
       return right(unit);
     });
   }
 
   TaskEither<ConnectionFailure, Unit> start(String path, String name, bool disableMemoryLimit) {
     return TaskEither(() async {
+      if (currentState is CoreStarted) return left(const ConnectionFailure.unexpected('A tunnel is already active'));
+      final generation = ++_startGeneration;
+      statusController.add(currentState = const CoreStatus.starting());
+      gfpProbeSession?.cancel();
+      gfpProbeSession = null;
+      if (isGfpProfileName(name)) {
+        final options = _appliedOptions ?? ref.read(ConfigOptions.singboxConfigOptions);
+        if (options == null) return left(const ConnectionFailure.invalidConfigOption('Missing configuration options'));
+        try {
+          gfpProbeSession = await prepareGfpProbe(path, options);
+        } catch (error) {
+          statusController.add(currentState = const CoreStatus.stopped());
+          return left(ConnectionFailure.unexpected(error));
+        }
+      }
+      if (generation != _startGeneration) {
+        gfpProbeSession?.cancel();
+        gfpProbeSession = null;
+        return left(const ConnectionFailure.unexpected('Connection cancelled'));
+      }
       statusController.add(currentState = const CoreStatus.starting());
       loggy.debug("starting");
       final background = await core.setupBackground(path, name);
@@ -163,6 +315,8 @@ class HiddifyCoreService with InfraLogger {
           StartRequest(
             configPath: path,
             configName: name,
+            configContent: gfpProbeSession == null ? null : jsonEncode(gfpProbeSession!.config),
+            enableRawConfig: gfpProbeSession != null,
             // configContent: content,
             disableMemoryLimit: disableMemoryLimit,
           ),
@@ -230,10 +384,13 @@ class HiddifyCoreService with InfraLogger {
 
   TaskEither<String, Unit> stop() {
     return TaskEither(() async {
+      _startGeneration++;
+      gfpProbeSession?.cancel();
+      gfpProbeSession = null;
       loggy.debug("stopping");
       var errMsg = "";
       try {
-        final res = await core.bgClient.stop(Empty());
+        await core.bgClient.stop(Empty());
       } on GrpcError catch (e) {
         if (e.code == StatusCode.unknown && !(e.message?.contains("HTTP/2") ?? false)) {
           errMsg = e.message ?? "failed to stop core: $e";
@@ -253,6 +410,11 @@ class HiddifyCoreService with InfraLogger {
 
   TaskEither<String, Unit> restart(String path, String name, bool disableMemoryLimit) {
     return TaskEither(() async {
+      if (isGfpProfileName(name)) {
+        final stopped = await stop().run();
+        if (stopped.isLeft()) return stopped;
+        return (await start(path, name, disableMemoryLimit).run()).mapLeft((failure) => failure.toString());
+      }
       loggy.debug("restarting");
       // if (!await core.restart(path, name)) {
       try {
@@ -484,6 +646,7 @@ class HiddifyCoreService with InfraLogger {
           })
           .endWith(CoreInfoResponse(coreState: CoreStates.STOPPED))
           .map((event) {
+            if (_buildingProbeConfig) return currentState;
             currentState = CoreStatus.fromCoreInfo(event);
             statusController.add(currentState);
             return currentState;
@@ -583,7 +746,6 @@ class HiddifyCoreService with InfraLogger {
       config_log_level.LogLevel.error => LogLevel.ERROR,
       config_log_level.LogLevel.fatal => LogLevel.FATAL,
       config_log_level.LogLevel.panic => LogLevel.FATAL,
-      _ => LogLevel.INFO, // Default case
     };
   }
 
@@ -596,10 +758,14 @@ class HiddifyCoreService with InfraLogger {
       await stopListenSingle("bg");
       try {
         await core.fgClient.close(CloseRequest(mode: SetupMode.GRPC_NORMAL_INSECURE));
-      } catch (e) {}
+      } catch (_) {
+        /* The foreground channel may already be closed. */
+      }
       try {
         await core.fgClient.close(CloseRequest(mode: SetupMode.GRPC_NORMAL));
-      } catch (e) {}
+      } catch (_) {
+        /* Both setup modes can share the same closed channel. */
+      }
     }
   }
 

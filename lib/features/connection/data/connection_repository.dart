@@ -71,7 +71,10 @@ class ConnectionRepositoryImpl with ExceptionHandler, InfraLogger implements Con
       (event) => switch (event) {
         CoreStopped() => Disconnected(event.getCoreAlert()),
         CoreStarting() => const Connecting(),
-        CoreStarted() => const Connected(),
+        CoreStarted() =>
+          singbox.gfpProbeSession != null && !singbox.gfpProbeSession!.observeOnly && !singbox.gfpProbeSession!.locked
+              ? const Connecting()
+              : const Connected(),
         CoreStopping() => const Disconnecting(),
       },
     );

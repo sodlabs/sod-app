@@ -16,8 +16,8 @@ const Set<String> kGfpLegacyProfileTitles = {'sodlab (auto, non verifie)'};
 bool isGfpProfileName(String name) => name == kGfpProfileTitle || kGfpLegacyProfileTitles.contains(name);
 
 // Ne pas reprendre l'ancien cache, construit avec un filtre moins strict.
-const _cacheKeyContent = 'gfp_subscription_content_v9';
-const _cacheKeyTimestamp = 'gfp_subscription_timestamp_v9';
+const _cacheKeyContent = 'gfp_subscription_content_v10';
+const _cacheKeyTimestamp = 'gfp_subscription_timestamp_v10';
 
 class GfpNoReachableProxyException implements Exception {
   const GfpNoReachableProxyException();
@@ -63,7 +63,7 @@ class GfpProxyService {
     return _containsProxy(content) ? content : null;
   }
 
-  Future<void> saveValidatedCache(String content) async {
+  Future<void> saveCandidateCache(String content) async {
     if (!_containsProxy(content)) throw const GfpNoReachableProxyException();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_cacheKeyContent, content);
@@ -74,7 +74,7 @@ class GfpProxyService {
     int maxCandidatesToTest = 96,
     int concurrency = 6,
     Duration testTimeout = const Duration(seconds: 3),
-    int maxFinal = 12,
+    int maxFinal = 60,
     void Function(int done, int total)? onProgress,
   }) async {
     // Les listes sont lues par flux pour limiter la mémoire utilisée.

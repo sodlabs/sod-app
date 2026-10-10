@@ -7,6 +7,7 @@ import 'package:hiddify/core/localization/translations.dart';
 import 'package:hiddify/core/preferences/preferences_provider.dart';
 import 'package:hiddify/core/utils/preferences_utils.dart';
 import 'package:hiddify/features/connection/notifier/connection_notifier.dart';
+import 'package:hiddify/features/gfp/gfp_health_monitor.dart';
 import 'package:hiddify/features/proxy/data/proxy_data_providers.dart';
 import 'package:hiddify/features/proxy/model/proxy_failure.dart';
 import 'package:hiddify/hiddifycore/generated/v2/hcore/hcore.pb.dart';
@@ -64,6 +65,7 @@ class ProxiesOverviewNotifier extends _$ProxiesOverviewNotifier with AppLogger {
       return Stream.error(const ServiceNotRunning());
     }
     final sortBy = ref.watch(proxiesSortNotifierProvider);
+    final verifiedTags = ref.watch(gfpVerifiedTagsProvider);
     // yield* ref
     //     .watch(proxyRepositoryProvider)
     //     .watchProxies()
@@ -90,6 +92,17 @@ class ProxiesOverviewNotifier extends _$ProxiesOverviewNotifier with AppLogger {
             throw err;
           }),
         )
+        .map((group) {
+          if (group == null || verifiedTags == null) return group;
+          final filtered = OutboundGroup.fromBuffer(group.writeToBuffer());
+          filtered.items.removeWhere(
+            (item) => item.isGroup || (!verifiedTags.contains(item.tag) && item.tag != filtered.selected),
+          );
+          for (final item in filtered.items) {
+            if (!verifiedTags.contains(item.tag)) item.urlTestDelay = 0;
+          }
+          return filtered;
+        })
         .asyncMap((proxies) async => await _sortOutbounds(proxies, sortBy));
   }
 

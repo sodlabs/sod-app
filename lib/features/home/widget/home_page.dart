@@ -67,7 +67,7 @@ class HomePage extends HookConsumerWidget {
                 return Future<void>.value();
               },
               (_) async {
-                if (cached == null) await service.saveValidatedCache(content);
+                if (cached == null) await service.saveCandidateCache(content);
                 gfpStatus.value = 'done';
               },
             );
@@ -421,7 +421,9 @@ Future<String> _refreshForCurrentNetwork(
   return service.refresh(
     maxCandidatesToTest: deepScan ? (onWifi ? 1000 : 240) : (onWifi ? 96 : 48),
     concurrency: deepScan ? (onWifi ? 12 : 6) : (onWifi ? 8 : 4),
-    maxFinal: deepScan ? 20 : 12,
+    // Keep a reserve for real protocol/payload proofs, not just the first
+    // twelve open ports. Only routes passing those proofs will be offered.
+    maxFinal: deepScan ? (onWifi ? 100 : 60) : (onWifi ? 60 : 30),
     onProgress: (done, total) => status.value = 'test $done/$total',
   );
 }
@@ -463,7 +465,7 @@ Future<void> _refreshGfpProfileManually(
         return Future<void>.value();
       },
       (_) async {
-        await service.saveValidatedCache(content);
+        await service.saveCandidateCache(content);
         status.value = 'refresh complete — reconnect to validate a route';
       },
     );
