@@ -177,6 +177,28 @@ void main() {
     expect(recovered.password, session.password);
     expect(recovered.users, session.users);
     expect(recovered.validatedTags, isEmpty);
+    final inbound = (session.config['inbounds'] as List).cast<Map>().firstWhere(
+      (inbound) => inbound['tag'] == GfpProbeSession.inboundTag,
+    );
+    for (final account in (inbound['users'] as List).cast<Map>()) {
+      account['Password'] = account.remove('password');
+      account['Username'] = account.remove('username');
+    }
+    // Reproduce the native dump's canonical scalar representation.
+    for (final rule in rules.cast<Map>()) {
+      if (rule['inbound'] is List && (rule['inbound'] as List).length == 1) {
+        rule['inbound'] = (rule['inbound'] as List).single;
+      }
+      if (rule['auth_user'] is List && (rule['auth_user'] as List).length == 1) {
+        rule['auth_user'] = (rule['auth_user'] as List).single;
+      }
+    }
+    final restored = GfpProbeSession.recover(session.config, remoteDnsAddress: 'tcp://8.8.8.8')!;
+    expect(restored.observeOnly, isTrue);
+    expect(restored.validatedTags, isEmpty);
+    expect(restored.password, session.password);
+    (inbound['users'] as List).cast<Map>().first.remove('Password');
+    expect(GfpProbeSession.recover(session.config, remoteDnsAddress: 'tcp://8.8.8.8'), isNull);
   });
 
   test('DNS proof rejects a wrong transaction, truncated response, and NXDOMAIN', () {

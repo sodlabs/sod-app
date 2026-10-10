@@ -138,16 +138,29 @@ class GfpProbeSession {
     if (inbound['listen'] != '127.0.0.1') return null;
     final accounts = ((inbound['users'] as List?) ?? const []).cast<Map>();
     if (accounts.isEmpty) return null;
-    final password = accounts.first['password'] as String;
-    if (accounts.any((account) => account['password'] != password)) return null;
-    final names = accounts.map((account) => account['username']).toSet();
+    String? passwordOf(Map account) => (account['password'] ?? account['Password']) as String?;
+    final nativePassword = passwordOf(accounts.first);
+    if (nativePassword == null ||
+        nativePassword.isEmpty ||
+        accounts.any((account) => passwordOf(account) != nativePassword)) {
+      return null;
+    }
+    final names = accounts.map((account) => account['username'] ?? account['Username']).whereType<String>().toSet();
     final rules = (((config['route'] as Map?)?['rules'] as List?) ?? const []).cast<Map>();
     final users = <String, String>{};
     for (final rule in rules) {
-      final auth = rule['auth_user'];
-      if (rule['inbound'] is List &&
-          (rule['inbound'] as List).contains(inboundTag) &&
-          auth is List &&
+      // Native Listable fields serialize a single value as a JSON string.
+      final inboundTags = switch (rule['inbound']) {
+        final List values => values,
+        final String value => [value],
+        _ => const [],
+      };
+      final auth = switch (rule['auth_user']) {
+        final List values => values,
+        final String value => [value],
+        _ => const [],
+      };
+      if (inboundTags.contains(inboundTag) &&
           auth.length == 1 &&
           names.contains(auth.single) &&
           rule['outbound'] is String) {
@@ -157,7 +170,7 @@ class GfpProbeSession {
     if (users.isEmpty) return null;
     return GfpProbeSession(
       port: inbound['listen_port'] as int,
-      password: password,
+      password: nativePassword,
       users: users,
       config: config,
       remoteDnsAddress: remoteDnsAddress,

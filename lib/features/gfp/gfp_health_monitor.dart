@@ -21,7 +21,10 @@ class GfpVerifiedTags extends Notifier<Set<String>?> {
   @override
   Set<String>? build() => null;
 
-  void update(Set<String>? tags) => state = tags == null ? null : Set.unmodifiable(tags);
+  void update(Set<String>? tags) {
+    if (setEquals(state, tags)) return;
+    state = tags == null ? null : Set.unmodifiable(tags);
+  }
 }
 
 class GfpHealthStatus extends Notifier<String> {
@@ -119,6 +122,7 @@ class GfpHealthMonitor {
       _network = _networkKey(networks);
       if (!shouldContinue() || session.cancelled) return;
       _setStatus('checking real local transfer');
+      var publishedReady = false;
       await const GfpSustainedProxyValidator().validateAndLock(
         core,
         session,
@@ -128,7 +132,15 @@ class GfpHealthMonitor {
         onResultsChanged: () {
           if (!shouldContinue() || session.cancelled) return;
           ref.read(gfpVerifiedTagsProvider.notifier).update(session.validatedTags);
-          if (session.locked) _setStatus('using locally verified route');
+          if (session.locked) {
+            _setStatus('using locally verified route');
+            if (!publishedReady) {
+              publishedReady = true;
+              // Publish logical readiness once without rebuilding/replacing
+              // the native status listener for each candidate result.
+              core.statusController.add(core.currentState);
+            }
+          }
         },
       );
       if (!shouldContinue()) return;

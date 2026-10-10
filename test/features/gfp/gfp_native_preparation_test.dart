@@ -130,6 +130,12 @@ void main() {
         expect(started.messageType, MessageType.EMPTY);
         await expectLater(service.prepareGfpProbe(profile.path, options), throwsStateError);
         expect((await native.bgClient.coreInfoListener(Empty()).first).coreState, CoreStates.STARTED);
+        final persisted = (jsonDecode(await File('${directory.path}/data/current-config.json').readAsString()) as Map)
+            .cast<String, dynamic>();
+        final recoveredNative = GfpProbeSession.recover(persisted, remoteDnsAddress: options.remoteDnsAddress)!;
+        expect(recoveredNative.users, session.users);
+        expect(recoveredNative.password, session.password);
+        expect(recoveredNative.observeOnly, isTrue);
 
         service.currentState = const CoreStatus.started();
         service.gfpProbeSession = session;

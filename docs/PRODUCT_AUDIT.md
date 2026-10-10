@@ -85,7 +85,29 @@ The native preparation test also covers the bundled builder's redundant
 empty-direct DNS detour, restoration of options and TUN configuration, and
 refusal to stop an already verified or recovered connection. Loopback tests
 exercise SOCKS UDP DNS, DoH and removal of local proxy credentials from origin
-requests. No new Android runtime result is claimed until device testing.
+requests. Observation-only recovery accepts the native dump's canonical user
+field casing and scalar list fields without restoring availability verdicts or
+changing the active route.
+
+On 10 October 2026, the stronger validator was tested in a separate debug
+package on the connected Samsung SM-S918B (Android 16), without replacing the
+signed production app or its data. It selected a concrete VLESS route after
+the full local proof. Android's curl then downloaded 1 MiB over HTTPS from
+Cloudflare and a 128 KiB GitHub prefix with the expected SHA-256 fingerprint.
+TUN counters and native download totals increased; the selected route did not
+change. A separate HTTPS POST sent 128 KiB through the TUN; the upload echo
+returned the exact payload with the same SHA-256 fingerprint. Attempting
+manual refresh while connected showed the refusal dialog and preserved the
+tunnel and selection.
+
+The on-device proxy chooser offered one freshly verified route from sixty
+preflight candidates. An isolated failing-candidate download returned no body
+and failed, while a probe through the live route received the expected 128 KiB;
+neither changed the selector. After fixing redundant readiness notifications
+and native-config recovery, recreating the Android activity preserved the same
+VPN network and route during a 2 MiB HTTPS transfer, which completed without
+error. This includes a fresh observation-only proof after reopening.
+
 The following Android observation predates these changes:
 
 The Android prototype was installed side-by-side on a Samsung SM-S918B. It
