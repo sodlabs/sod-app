@@ -16,7 +16,11 @@ class GfpDnsProbe {
   Future<bool> verify(GfpProbeAttempt attempt, String tag, GfpPayloadProbe payload) async {
     try {
       attempt.check();
-      if (address == 'local') return (await InternetAddress.lookup('example.com')).isNotEmpty;
+      if (address == 'local') {
+        final addresses = await InternetAddress.lookup('example.com').timeout(const Duration(seconds: 5));
+        attempt.check();
+        return addresses.isNotEmpty;
+      }
       final uri = Uri.parse(address.contains('://') ? address : 'udp://$address');
       final id = Random.secure().nextInt(65536);
       final query = <int>[id >> 8, id & 255, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0];

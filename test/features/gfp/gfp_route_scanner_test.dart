@@ -104,6 +104,28 @@ void main() {
     expect(attempt.closed, isTrue);
   });
 
+  test('a proof completing after its attempt closes can never validate a route', () async {
+    final session = fixtureSession(1);
+    var selections = 0;
+    await const GfpRouteScanner().scan(
+      session: session,
+      candidates: ['route'],
+      budget: GfpProbeBudget(),
+      verify: (_, attempt) async {
+        attempt.close();
+        return true;
+      },
+      onFirstVerified: (_) async {
+        selections++;
+        return true;
+      },
+      onResultsChanged: () {},
+      shouldContinue: () => true,
+    );
+    expect(session.validatedTags, isEmpty);
+    expect(selections, 0);
+  });
+
   test('probe routes precede bypass and DNS rules and fail closed', () {
     final original = <String, dynamic>{
       'inbounds': [

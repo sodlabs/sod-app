@@ -39,6 +39,7 @@ class GfpRouteScanner {
         attempts.add(attempt);
         try {
           final valid = await verify(tag, attempt);
+          attempt.check();
           if (!canContinue()) return;
           if (!valid) {
             session.rejectedTags.add(tag);
